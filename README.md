@@ -1,189 +1,181 @@
-# Multi-Agent Platform
+# ResumeFit
 
-Build multiple AI agents, keep them in sync through one shared orchestration layer, and make every agent available from a single frontend.
+A command-line tool that **scores your resume against a job description** and **tracks your job applications**, all in a single Python file.
 
-## Overview
-
-Each agent is a self-contained module (its own prompt, tools and logic). A central **agent registry** discovers them automatically, an **orchestrator** runs them and keeps shared state in sync, and a **frontend** lists every registered agent so users can chat with any of them, or run several together.
+Paste in a job description and ResumeFit tells you how well your resume fits, which skills you're missing, and which job-description keywords your resume never mentions. Then save the job to a local tracker and follow it from *wishlist* to *offer*.
 
 ```
-┌────────────┐   REST / WebSocket   ┌──────────────────────────────┐
-│  Frontend  │ ───────────────────▶ │  API Gateway (FastAPI)       │
-│ (agent UI) │ ◀─────────────────── │                              │
-└────────────┘      live events     │  ┌────────────────────────┐  │
-                                    │  │ Orchestrator           │  │
-                                    │  │ - routing              │  │
-                                    │  │ - shared state / sync  │  │
-                                    │  └──────────┬─────────────┘  │
-                                    │             │                │
-                                    │  ┌──────────▼─────────────┐  │
-                                    │  │ Agent Registry         │  │
-                                    │  └─┬────────┬────────┬────┘  │
-                                    └────┼────────┼────────┼───────┘
-                                      Agent A  Agent B  Agent C ...
+=== ResumeFit report ===
+Overall match   [############------------------] 40%
+Skill coverage  47%   |   Text similarity 24%
+
+Weak match - tailor the resume heavily or prioritise other roles.
+
+Matched skills (7): Docker, FastAPI, LLMs, PyTorch, Python, RAG, Vector databases
+Missing skills (8): AWS, CI/CD, Flask, Kubernetes, LangChain, REST APIs, System design, Testing
+JD keywords not in your resume: engineer, applications, pipelines, familiarity, collaborate, product, stakeholders
+Your other skills (not asked for): C++, Git, Hugging Face, Java, Linux, NLP, OpenCV, SQL, WebSockets, YOLO
 ```
+
+---
 
 ## Features
 
-- **Pluggable agents**: add a new agent by dropping a folder into `agents/`; no core changes needed.
-- **Auto-discovery**: the registry scans `agents/` and exposes every agent to the API and frontend.
-- **Sync across agents**: agents read and write a shared context store, so one agent's output is visible to the others.
-- **Single frontend**: one UI with an agent picker, chat view, and a multi-agent (workflow) mode.
-- **Streaming**: responses and agent status stream to the UI over WebSockets / SSE.
-- **Async by default**: agents run concurrently without blocking each other.
+- **Resume ↔ JD matching**
+  - Finds skills using a built-in list of 75+ skills, each with its aliases (e.g. `k8s` → Kubernetes, `sklearn` → scikit-learn, `postgres` → PostgreSQL)
+  - Handles tricky names like `C++`, `C#`, `Node.js`, `CI/CD`, and plural forms
+  - Compares the two texts with cosine similarity over unigrams and bigrams
+  - Gives one overall score: **70% skill coverage + 30% text similarity**
+  - Lists the JD keywords that are missing from your resume, so you can match the job's wording
+  - Prints the result as a readable report or as JSON (`--json`)
+- **Application tracker**
+  - Stores applications in a local SQLite file (`applications.db`)
+  - Statuses: `wishlist`, `applied`, `oa`, `interview`, `offer`, `rejected`, `withdrawn`
+  - Notes, links and match scores for each application
+  - Pipeline stats: count per status, response rate and average match score
+- **Light on dependencies.** It runs on the Python standard library. PDF and DOCX support is optional.
 
-## Project Structure
+---
 
-```
-.
-├── backend/
-│   ├── main.py                 # App entrypoint (API + WebSocket)
-│   ├── core/
-│   │   ├── base_agent.py       # BaseAgent interface every agent implements
-│   │   ├── registry.py         # Discovers and registers agents
-│   │   ├── orchestrator.py     # Runs agents, routes tasks, manages sync
-│   │   └── state.py            # Shared state / memory store
-│   ├── agents/
-│   │   ├── research_agent/
-│   │   │   ├── agent.py
-│   │   │   ├── prompt.md
-│   │   │   └── tools.py
-│   │   ├── coding_agent/
-│   │   └── summarizer_agent/
-│   ├── routes/
-│   │   ├── agents.py           # GET /agents, GET /agents/{id}
-│   │   └── chat.py             # POST /chat, WS /ws/{agent_id}
-│   └── requirements.txt
-├── frontend/
-│   ├── src/
-│   │   ├── components/         # AgentList, ChatWindow, WorkflowView
-│   │   ├── api/                # API + WebSocket client
-│   │   └── App.tsx
-│   └── package.json
-├── .env.example
-└── README.md
-```
+## Installation
 
-## Getting Started
-
-### Prerequisites
-
-- Python 3.10+
-- Node.js 18+
-- An API key for your LLM provider
-
-### 1. Clone and configure
+Requires **Python 3.9+**.
 
 ```bash
-git clone <your-repo-url>
-cd <your-repo>
-cp .env.example .env     # add your API keys
+git clone https://github.com/shekharsanskar9/ResumeFit.git
+cd ResumeFit
+
+# optional: needed only to read .pdf / .docx resumes
+pip install pypdf python-docx
 ```
 
-### 2. Run the backend
+---
+
+## Usage
+
+### Match a resume to a job description
 
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+python main.py match resume.pdf jd.txt
 ```
 
-### 3. Run the frontend
+The job description can be a file or text in quotes:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+python main.py match resume.pdf "We are hiring a Python developer with FastAPI, Docker and AWS experience..."
 ```
 
-Open http://localhost:5173. All registered agents appear in the sidebar.
+Get JSON output, for example to use in scripts:
 
-## Creating a New Agent
-
-1. Create a folder: `backend/agents/my_agent/`
-2. Add `agent.py` implementing the base interface:
-
-```python
-from core.base_agent import BaseAgent
-
-class MyAgent(BaseAgent):
-    id = "my_agent"
-    name = "My Agent"
-    description = "What this agent does"
-
-    async def run(self, message: str, context: dict) -> str:
-        # call your LLM / tools here
-        # read shared info from `context`, return the result
-        return "response"
+```bash
+python main.py match resume.pdf jd.txt --json
 ```
 
-3. Restart the backend (or hot-reload). The registry picks it up and it shows up in the frontend automatically.
+Match a job and save it to the tracker in one step:
 
-## How Syncing Works
+```bash
+python main.py match resume.pdf jd.txt --save --company Amgen --role "AI Engineer" --status applied
+```
 
-- **Shared state**: every run reads from and writes to a common store (`core/state.py`), keyed by session. Backends can be in-memory (dev), Redis (production), or a database.
-- **Event bus**: each agent publishes events (`started`, `tool_call`, `partial_output`, `done`, `error`). The orchestrator forwards these to the frontend in real time.
-- **Handoffs**: an agent can pass work to another (`orchestrator.handoff("summarizer_agent", payload)`), and the second agent sees the first one's context.
-- **Concurrency**: independent agents run in parallel with `asyncio.gather`; dependent agents run in sequence.
+### Track applications
 
-### Execution Modes
+```bash
+# add an application
+python main.py add Boeing "Software Engineer" --status applied --link https://careers.example.com/123 --notes "Referral from senior"
 
-| Mode | Description |
-|------|-------------|
-| Single | Chat with one selected agent |
-| Router | Orchestrator picks the best agent for each message |
-| Pipeline | Agents run in a fixed order, each using the previous output |
-| Parallel | Several agents work on the same task at once, results merged |
+# list all of them, or filter by status
+python main.py list
+python main.py list --status interview
 
-## API Reference
+# update status or notes
+python main.py update 2 --status oa --notes "OA on Monday, 90 min"
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/agents` | List all registered agents |
-| GET | `/agents/{id}` | Agent details and capabilities |
-| POST | `/chat` | Send a message to an agent (`agent_id`, `message`, `session_id`) |
-| POST | `/workflow` | Run a multi-agent pipeline or parallel workflow |
-| WS | `/ws/{agent_id}` | Streaming chat and live agent events |
-| GET | `/state/{session_id}` | Inspect shared state for a session |
+# pipeline summary
+python main.py stats
+```
 
-## Frontend
-
-- **Agent sidebar**: lists every agent from `GET /agents` with name, description and status.
-- **Chat window**: streaming responses, tool-call indicators.
-- **Workflow builder**: choose agents and run them in pipeline or parallel mode.
-- **Session state panel**: view what's currently shared between agents.
-
-## Configuration
-
-`.env` example:
+Sample `list` output:
 
 ```
-LLM_API_KEY=your_key_here
-LLM_MODEL=your_model_name
-STATE_BACKEND=memory        # memory | redis
-REDIS_URL=redis://localhost:6379
-CORS_ORIGINS=http://localhost:5173
+ ID  Company            Role                       Status     Score  Updated
+--------------------------------------------------------------------------------
+  2  Boeing             Software Engineer          oa             -  2026-11-06
+     note: OA next week
+  1  Amgen              AI Engineer                wishlist     40%  2026-11-06
 ```
+
+---
+
+## Commands
+
+| Command | Description | Key options |
+|---|---|---|
+| `match <resume> <jd>` | Score a resume against a JD | `--json`, `--save`, `--company`, `--role`, `--status` |
+| `add <company> <role>` | Add an application | `--status`, `--score`, `--link`, `--notes` |
+| `list` | Show applications | `--status` |
+| `update <id>` | Update an application | `--status`, `--notes` |
+| `stats` | Pipeline summary | none |
+
+Run `python main.py <command> -h` for full help.
+
+---
+
+## How the score works
+
+1. **Skill extraction.** Both texts are scanned for every alias in the `SKILLS` dictionary. Matching uses whole terms only, so `java` doesn't match inside `javascript`.
+2. **Skill coverage** = matched JD skills ÷ total JD skills.
+3. **Text similarity.** Cosine similarity of word and bigram counts, with stopwords removed. A resume and a JD rarely score above about 0.35, so the value is rescaled to 0–100%.
+4. **Overall score** = `0.7 × coverage + 0.3 × similarity`.
+
+| Score | Verdict |
+|---|---|
+| 75%+ | Strong match. Apply, and use the JD's wording in your bullet points. |
+| 50–74% | Decent match. Add the missing skills you really have before applying. |
+| < 50% | Weak match. Tailor the resume heavily or focus on other roles. |
+
+> Tip: only add a "missing skill" to your resume if you can talk about it in an interview.
+
+---
+
+## Customising
+
+- **Add skills:** edit the `SKILLS` dictionary in `main.py`. The key is the display name and the value is a list of lowercase aliases:
+  ```python
+  "FastAPI": ["fastapi"],
+  "Speech (STT/TTS)": ["speech-to-text", "text-to-speech", "stt", "tts", "asr"],
+  ```
+- **Ignore filler words:** add them to `STOPWORDS`.
+- **Change the weighting:** edit the `0.7` / `0.3` split in `match()`.
+- **Database location:** `DB_PATH` sets it. By default it's `applications.db`, next to `main.py`.
+
+---
+
+## Project structure
+
+```
+ResumeFit/
+├── main.py            # everything: parsing, matching, tracker, CLI
+├── README.md
+└── applications.db    # created automatically on first tracker use (add it to .gitignore)
+```
+
+---
 
 ## Roadmap
 
-- [ ] Base agent interface and registry
-- [ ] Orchestrator with shared state
-- [ ] Streaming API (WebSocket)
-- [ ] Frontend agent list and chat
-- [ ] Pipeline and parallel workflows
-- [ ] Persistent memory (Redis / database)
-- [ ] Auth and per-user sessions
-- [ ] Agent metrics and logging dashboard
+- [ ] FastAPI web app with resume upload and a dashboard
+- [ ] Semantic matching with sentence embeddings, so related skills count too
+- [ ] Optional LLM-generated suggestions for resume bullet points
+- [ ] Export the tracker to CSV
+- [ ] Reminders for applications with no update after N days
 
-## Contributing
+---
 
-1. Fork the repo and create a feature branch.
-2. Add your agent or fix, with tests where possible.
-3. Open a pull request describing what changed.
+## Tech stack
 
-## License
+Python · argparse · SQLite · regex-based skill extraction · cosine similarity (unigram/bigram) · optional `pypdf` and `python-docx`
 
-MIT
+## Author
+
+**Sanskar Shekhar**, B.Tech CSE, BIT Mesra
+[GitHub](https://github.com/shekharsanskar9) · [LinkedIn](https://linkedin.com/in/sanskar-shekhar)
